@@ -99,7 +99,6 @@ async function seedDefaults() {
       "Tenda a Rullo",
       "Tenda da Sole"
     ];
-    // Seed product_types
     for (const name of types) {
       await db.query(
         `INSERT INTO product_types(name)
@@ -111,7 +110,6 @@ async function seedDefaults() {
       );
     }
 
-    // Seed sub_categories per ciascun tipo
     const subMap = {
       "Zanzariera": ["Molla","Catena","Jolly","Telaio Fisso","Battente","A Kit"],
       "Riparazione Zanzariera": ["Molla","Catena"],
@@ -151,8 +149,8 @@ async function startServer() {
     await ensureSchema();
     await seedDefaults();
     const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () =>
-      console.log(`Server avviato su http://localhost:${PORT}`)
+    app.listen(PORT, '0.0.0.0', () =>
+      console.log(`Server avviato su http://0.0.0.0:${PORT}`)
     );
   } catch (err) {
     console.error("Errore durante setup iniziale:", err);
@@ -294,8 +292,7 @@ app.delete("/api/price-lists/:id", async (req, res) => {
   }
 });
 
-// WORKER AUTH
-app.post("/api/worker-login", async (req, res) => {
+// WORKER AUTH\app.post("/api/worker-login", async (req, res) => {
   const { username, code } = req.body;
   try {
     const { rows } = await db.query("SELECT * FROM workers WHERE username=$1", [username]);
@@ -312,17 +309,27 @@ app.post("/api/worker-login", async (req, res) => {
 // ORDERS CRUD
 app.get("/api/orders", async (_req, res) => {
   try {
-    const { rows } = await db.query((
-      `SELECT o.id, o.customer_name, o.phone_number, o.address,
-              pt.name AS product_type_name,
-              sc.name AS sub_category_name,
-              o.quantity, o.dimensions, o.color, o.custom_notes,
-              o.barcode, o.price_total, o.status, o.created_at
-         FROM orders o
-         LEFT JOIN product_types pt ON o.product_type_id=pt.id
-         LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
-         ORDER BY o.created_at DESC`
-    ));
+    const { rows } = await db.query(
+      `SELECT
+         o.id,
+         o.customer_name,
+         o.phone_number,
+         o.address,
+         pt.name AS product_type_name,
+         sc.name AS sub_category_name,
+         o.quantity,
+         o.dimensions,
+         o.color,
+         o.custom_notes,
+         o.barcode,
+         o.price_total,
+         o.status,
+         o.created_at
+       FROM orders o
+       LEFT JOIN product_types pt ON o.product_type_id=pt.id
+       LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
+       ORDER BY o.created_at DESC`
+    );
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -331,33 +338,59 @@ app.get("/api/orders", async (_req, res) => {
 });
 app.post("/api/orders", async (req, res) => {
   const {
-    customerName, productTypeId, subCategoryId = null,
-    dimensions, color, customNotes = "",
-    phoneNumber = null, address = null
+    customerName,
+    productTypeId,
+    subCategoryId = null,
+    dimensions,
+    color,
+    customNotes = "",
+    phoneNumber = null,
+    address = null
   } = req.body;
 
   try {
     const [w, h] = dimensions.split("x").map(Number);
-    const area = (w*h)/10000;
+    const area = (w * h) / 10000;
+
     const pl = await db.query(
       `SELECT price_per_sqm FROM price_lists WHERE product_type_id=$1 AND sub_category_id=$2`,
       [productTypeId, subCategoryId]
     );
-    const pricePerSqm = pl.rows.length ? Number(pl.rows[0].price_per_sqm):0;
-    const ci = await db.query("SELECT percent_increment FROM color_increments WHERE color=$1",[color]);
-    const percent = ci.rows[0] ? Number(ci.rows[0].percent_increment):0;
-    const priceTotal = pricePerSqm*area*(1+percent/100);
-    const barcode = `${Date.now()}${Math.floor(Math.random()*1000)}`;
+    const pricePerSqm = pl.rows.length ? Number(pl.rows[0].price_per_sqm) : 0;
+
+    const ci = await db.query(
+      "SELECT percent_increment FROM color_increments WHERE color=$1",
+      [color]
+    );
+    const percent = ci.rows[0] ? Number(ci.rows[0].percent_increment) : 0;
+
+    const priceTotal = pricePerSqm * area * (1 + percent / 100);
+    const barcode = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
     const { rows } = await db.query(
       `INSERT INTO orders(
-         customer_name,product_type_id,sub_category_id,
-         dimensions,color,custom_notes,phone_number,
-         address,barcode,price_total
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       RETURNING *`,
+         customer_name,
+         product_type_id,
+         sub_category_id,
+         dimensions,
+         color,
+         custom_notes,
+         phone_number,
+         address,
+         barcode,
+         price_total
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [
-        customerName,productTypeId,subCategoryId,dimensions,
-        color,customNotes,phoneNumber,address,barcode,priceTotal
+        customerName,
+        productTypeId,
+        subCategoryId,
+        dimensions,
+        color,
+        customNotes,
+        phoneNumber,
+        address,
+        barcode,
+        priceTotal
       ]
     );
     res.status(201).json(rows[0]);
@@ -371,11 +404,8 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   const { status, workerId } = req.body;
   try {
     const { rows } = await db.query(
-      `UPDATE orders
-         SET status=$1,
-             assigned_worker_id=COALESCE($2,assigned_worker_id)
-       WHERE id=$3 RETURNING *`,
-      [status, workerId||null, id]
+      `UPDATE orders SET status=$1, assigned_worker_id=COALESCE($2,assigned_worker_id) WHERE id=$3 RETURNING *`,
+      [status, workerId || null, id]
     );
     res.json(rows[0]);
   } catch (err) {
@@ -386,17 +416,23 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 app.get("/api/orders/barcode/:barcode", async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT o.id, o.customer_name,
-              pt.name AS product_type_name,
-              sc.name AS sub_category_name,
-              o.quantity,o.dimensions,o.color,
-              o.custom_notes,o.price_total,o.status,
-              w.username AS assigned_worker_name
-         FROM orders o
-         LEFT JOIN product_types pt ON o.product_type_id=pt.id
-         LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
-         LEFT JOIN workers w ON o.assigned_worker_id=w.id
-        WHERE o.barcode=$1`,
+      `SELECT
+         o.id,
+         o.customer_name,
+         pt.name AS product_type_name,
+         sc.name AS sub_category_name,
+         o.quantity,
+         o.dimensions,
+         o.color,
+         o.custom_notes,
+         o.price_total,
+         o.status,
+         w.username AS assigned_worker_name
+       FROM orders o
+       LEFT JOIN product_types pt ON o.product_type_id=pt.id
+       LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
+       LEFT JOIN workers w ON o.assigned_worker_id=w.id
+       WHERE o.barcode=$1`,
       [req.params.barcode]
     );
     if (!rows.length) return res.status(404).json({ error: "Ordine non trovato" });
@@ -431,20 +467,6 @@ app.post("/api/workers", async (req, res) => {
   try {
     const { rows } = await db.query(
       "INSERT INTO workers(username,access_code) VALUES($1,$2) RETURNING id,username,access_code",
-      [username, access_code]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Impossibile creare worker" });
-  }
-});
-app.delete("/api/workers/:id", async (req, res) => {
-  try {
-    await db.query("DELETE FROM workers WHERE id=$1", [req.params.id]);
-    res.status(204).end();
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Impossibile cancellare worker" });
+      [username, access");
   }
 });
