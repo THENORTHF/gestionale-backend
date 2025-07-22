@@ -17,6 +17,7 @@ app.get("/", (_req, res) => {
 
 // --- SCHEMA ENSURE ---
 async function ensureSchema() {
+  // Crea tabelle se non esistono e sistema vincoli
   await db.query(`
     CREATE TABLE IF NOT EXISTS product_types (
       id SERIAL PRIMARY KEY,
@@ -25,7 +26,7 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS sub_categories (
       id SERIAL PRIMARY KEY,
       product_type_id INTEGER REFERENCES product_types(id),
-      name TEXT UNIQUE NOT NULL
+      name TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS color_increments (
       id SERIAL PRIMARY KEY,
@@ -61,6 +62,21 @@ async function ensureSchema() {
       assigned_worker_id INTEGER REFERENCES workers(id),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Assicura vincolo UNIQUE composito su (product_type_id, name)
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'sub_categories_product_type_name_key'
+      ) THEN
+        -- già presente
+        NULL;
+      ELSE
+        ALTER TABLE sub_categories
+          ADD CONSTRAINT sub_categories_product_type_name_key
+          UNIQUE (product_type_id, name);
+      END IF;
+    END$$;
   `);
 }
 
@@ -105,8 +121,8 @@ async function seedDefaults() {
       const typeId = rows[0].id;
       for (const subName of subs) {
         await db.query(
-          `INSERT INTO sub_categories(product_type_id,name)
-             SELECT $1,$2
+          `INSERT INTO sub_categories(product_type_id, name)
+             SELECT $1, $2
            WHERE NOT EXISTS (
              SELECT 1 FROM sub_categories
               WHERE product_type_id=$1 AND name=$2
@@ -128,7 +144,7 @@ async function startServer() {
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
   } catch (err) {
-    console.error('Errore durante setup iniziale:', err);
+    console.error("Errore durante setup iniziale:", err);
     process.exit(1);
   }
 }
@@ -381,7 +397,7 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   try {
     const { rows } = await db.query(
       `UPDATE orders SET status=$1, assigned_worker_id=COALESCE($2,assigned_worker_id) WHERE id=$3 RETURNING *`,
-      [status, workerId || null, id]
+      [status, workerId||null, id]
     );
     res.json(rows[0]);
   } catch (err) {
