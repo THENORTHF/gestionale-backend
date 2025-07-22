@@ -15,6 +15,55 @@ app.get("/", (_req, res) => {
   res.send(`✅ Backend gestionale attivo su porta ${process.env.PORT || 5000}`);
 });
 
+// --- SCHEMA ENSURE ---
+async function ensureSchema() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS product_types (
+      id SERIAL PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sub_categories (
+      id SERIAL PRIMARY KEY,
+      product_type_id INTEGER REFERENCES product_types(id),
+      name TEXT UNIQUE NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS color_increments (
+      id SERIAL PRIMARY KEY,
+      color TEXT UNIQUE NOT NULL,
+      percent_increment NUMERIC NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS price_lists (
+      id SERIAL PRIMARY KEY,
+      customer_id INTEGER,
+      product_type_id INTEGER REFERENCES product_types(id),
+      sub_category_id INTEGER REFERENCES sub_categories(id),
+      price_per_sqm NUMERIC NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workers (
+      id SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      access_code TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS orders (
+      id SERIAL PRIMARY KEY,
+      customer_name TEXT NOT NULL,
+      product_type_id INTEGER REFERENCES product_types(id),
+      sub_category_id INTEGER REFERENCES sub_categories(id),
+      quantity INTEGER DEFAULT 1,
+      dimensions TEXT NOT NULL,
+      color TEXT NOT NULL,
+      custom_notes TEXT,
+      phone_number TEXT,
+      address TEXT,
+      barcode TEXT UNIQUE NOT NULL,
+      price_total NUMERIC NOT NULL,
+      status TEXT DEFAULT 'In attesa',
+      assigned_worker_id INTEGER REFERENCES workers(id),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
 // --- SEEDING DEFAULTS ---
 async function seedDefaults() {
   try {
@@ -70,7 +119,20 @@ async function seedDefaults() {
     console.error("Errore seeding defaults:", err);
   }
 }
-seedDefaults();
+
+// --- START SERVER ---
+async function startServer() {
+  try {
+    await ensureSchema();
+    await seedDefaults();
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
+  } catch (err) {
+    console.error('Errore durante setup iniziale:', err);
+    process.exit(1);
+  }
+}
+startServer();
 
 // --- ROUTES ---
 
@@ -221,7 +283,6 @@ app.post("/api/worker-login", async (req, res) => {
 });
 
 // ORDERS CRUD
-// GET all orders
 app.get("/api/orders", async (_req, res) => {
   try {
     const { rows } = await db.query(
@@ -251,8 +312,6 @@ app.get("/api/orders", async (_req, res) => {
     res.status(500).json({ error: "Errore server orders" });
   }
 });
-
-// CREATE order
 app.post("/api/orders", async (req, res) => {
   const {
     customerName,
@@ -316,8 +375,6 @@ app.post("/api/orders", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// UPDATE status
 app.patch("/api/orders/:id/status", async (req, res) => {
   const { id } = req.params;
   const { status, workerId } = req.body;
@@ -332,8 +389,6 @@ app.patch("/api/orders/:id/status", async (req, res) => {
     res.status(500).json({ error: "Errore aggiornamento status" });
   }
 });
-
-// GET by barcode
 app.get("/api/orders/barcode/:barcode", async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -363,8 +418,6 @@ app.get("/api/orders/barcode/:barcode", async (req, res) => {
     res.status(500).json({ error: "Errore server" });
   }
 });
-
-// DELETE order
 app.delete("/api/orders/:id", async (req, res) => {
   try {
     await db.query("DELETE FROM orders WHERE id=$1", [req.params.id]);
@@ -407,7 +460,3 @@ app.delete("/api/workers/:id", async (req, res) => {
     res.status(500).json({ error: "Impossibile cancellare worker" });
   }
 });
-
-// Avvio del server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server avviato su http://localhost:${PORT}`));
