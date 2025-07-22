@@ -1,25 +1,20 @@
 // db.js
-require('dotenv').config();
+// ------------
+// Usa esclusivamente DATABASE_URL in produzione (Railway)
+// e in locale puoi continuare a definire DATABASE_URL in .env se vuoi.
+
 const { Pool } = require('pg');
 
-let pool;
-
-if (process.env.DATABASE_URL) {
-  // PRODUZIONE su Railway: usa un unico connection string e SSL
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
-  });
-} else {
-  // SVILUPPO in locale: usa le singole variabili (se le hai)
-  pool = new Pool({
-    host:     process.env.DB_HOST,
-    port:     process.env.DB_PORT,
-    user:     process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-  });
+// La variabile DATABASE_URL deve essere presente su Railway (controlla in Settings → Variables)
+if (!process.env.DATABASE_URL) {
+  console.error('⚠️ Errore: variabile DATABASE_URL non trovata.');
+  process.exit(1);
 }
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
 module.exports = {
   query: (text, params) => pool.query(text, params),
