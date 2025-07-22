@@ -1,4 +1,3 @@
-// index.js
 // Entry point per il server Express del gestionale
 
 const express = require("express");
@@ -66,8 +65,7 @@ async function ensureSchema() {
   // Adjust unique constraint on sub_categories
   await db.query(
     `ALTER TABLE sub_categories
-       DROP CONSTRAINT IF EXISTS sub_categories_name_key;
-    `
+       DROP CONSTRAINT IF EXISTS sub_categories_name_key;`
   );
   await db.query(
     `DO $$
@@ -81,14 +79,14 @@ async function ensureSchema() {
           UNIQUE (product_type_id, name);
         END IF;
       END
-    $$;
-    `
+    $$;`
   );
 }
 
 // --- SEEDING DEFAULTS ---
 async function seedDefaults() {
   try {
+    // Seed product_types
     const types = [
       "Zanzariera",
       "Riparazione Zanzariera",
@@ -109,6 +107,7 @@ async function seedDefaults() {
       );
     }
 
+    // Seed sub_categories
     const subMap = {
       "Zanzariera": ["Molla","Catena","Jolly","Telaio Fisso","Battente","A Kit"],
       "Riparazione Zanzariera": ["Molla","Catena"],
@@ -137,6 +136,16 @@ async function seedDefaults() {
         );
       }
     }
+
+    // Seed di un worker di default per poter accedere
+    await db.query(
+      `INSERT INTO workers(username, access_code)
+         SELECT 'admin', 'admin123'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM workers WHERE username='admin'
+       );`
+    );
+
   } catch (err) {
     console.error("Errore seeding defaults:", err);
   }
@@ -297,14 +306,15 @@ app.delete("/api/price-lists/:id", async (req, res) => {
 // WORKER AUTH
 app.post("/api/worker-login", async (req, res) => {
   try {
-    const { username, code } = req.body;
+    const { username, access_code } = req.body;
     const { rows } = await db.query(
       "SELECT * FROM workers WHERE username=$1;",
       [username]
     );
     const worker = rows[0];
     if (!worker) return res.status(401).json({ error: "Utente non trovato" });
-    if (code !== worker.access_code) return res.status(401).json({ error: "Codice errato" });
+    if (access_code !== worker.access_code)
+      return res.status(401).json({ error: "Codice errato" });
     res.json({ id: worker.id, username: worker.username });
   } catch (err) {
     console.error(err);
