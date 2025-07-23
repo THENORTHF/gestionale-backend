@@ -7,6 +7,12 @@
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "config": {
+    "production": "--omit=dev"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -20,4 +26,3 @@
     "nodemon": "^2.0.22"
   }
 }
-
