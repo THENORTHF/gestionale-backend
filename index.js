@@ -10,6 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 // --- HEALTH CHECK ---
+// --- HEALTH CHECK ---
 app.get("/", (_req, res) => {
   res.send(`✅ Backend gestionale attivo su porta ${process.env.PORT || 5000}`);
 });
