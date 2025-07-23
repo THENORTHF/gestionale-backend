@@ -60,15 +60,11 @@ async function ensureSchema() {
       assigned_worker_id INTEGER REFERENCES workers(id),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-  `);
 
-  // Adjust unique constraint on sub_categories
-  await db.query(
-    `ALTER TABLE sub_categories
-       DROP CONSTRAINT IF EXISTS sub_categories_name_key;`
-  );
-  await db.query(
-    `DO $$
+    -- Vincolo UNIQUE corretto sulle sub-categorie
+    ALTER TABLE sub_categories
+      DROP CONSTRAINT IF EXISTS sub_categories_name_key;
+    DO $$
       BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint
@@ -79,8 +75,8 @@ async function ensureSchema() {
           UNIQUE (product_type_id, name);
         END IF;
       END
-    $$;`
-  );
+    $$;
+  `);
 }
 
 // --- SEEDING DEFAULTS ---
@@ -137,7 +133,7 @@ async function seedDefaults() {
       }
     }
 
-    // Seed di un worker di default per poter accedere
+    // Seed worker di default
     await db.query(
       `INSERT INTO workers(username, access_code)
          SELECT 'admin', 'admin123'
@@ -146,6 +142,43 @@ async function seedDefaults() {
        );`
     );
 
+    // Seed color_increments demo
+    const colorSeeds = [
+      { color: 'Bianco', percent: 0 },
+      { color: 'Nero', percent: 5 },
+      { color: 'Rosso', percent: 10 }
+    ];
+    for (const { color, percent } of colorSeeds) {
+      await db.query(
+        `INSERT INTO color_increments(color, percent_increment)
+           SELECT $1, $2
+         WHERE NOT EXISTS (
+           SELECT 1 FROM color_increments WHERE color=$1
+         );`,
+        [color, percent]
+      );
+    }
+
+    // Seed price_lists demo: per customer_id=1, Zanzariera/Molla
+    const pl = await db.query(
+      `SELECT pt.id AS pt_id, sc.id AS sc_id
+         FROM product_types pt
+         JOIN sub_categories sc ON sc.product_type_id=pt.id
+         WHERE pt.name='Zanzariera' AND sc.name='Molla' LIMIT 1;`
+    );
+    if (pl.rows[0]) {
+      const { pt_id, sc_id } = pl.rows[0];
+      await db.query(
+        `INSERT INTO price_lists(customer_id, product_type_id, sub_category_id, price_per_sqm)
+           SELECT 1, $1, $2, 25.0
+         WHERE NOT EXISTS (
+           SELECT 1 FROM price_lists
+           WHERE customer_id=1 AND product_type_id=$1 AND sub_category_id=$2
+         );`,
+        [pt_id, sc_id]
+      );
+    }
+
   } catch (err) {
     console.error("Errore seeding defaults:", err);
   }
@@ -153,20 +186,16 @@ async function seedDefaults() {
 
 // --- START SERVER ---
 async function startServer() {
-   // Assicuriamoci lo schema, ma in caso di errore logghiamo e procediamo
-try {
-   await ensureSchema();
+  try {
+    await ensureSchema();
   } catch (err) {
     console.error("Errore in ensureSchema (ignoro e continuo):", err);
   }
-
-  // Seminiamo i defaults, ma in caso di errore proseguiamo comunque
   try {
     await seedDefaults();
   } catch (err) {
     console.error("Errore in seedDefaults (ignoro e continuo):", err);
   }
-  // Avviamo sempre il server
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () =>
     console.log(`Server attivo su http://0.0.0.0:${PORT}`)
