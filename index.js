@@ -15,7 +15,7 @@ app.get("/", (_req, res) => {
   res.send(`✅ Backend gestionale attivo su porta ${process.env.PORT || 5000}`);
 });
 
-// --- SCHEMA ENSURE ---
+// --- SCHEMA ENSURE --
 async function ensureSchema() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS product_types (
