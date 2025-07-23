@@ -153,17 +153,24 @@ async function seedDefaults() {
 
 // --- START SERVER ---
 async function startServer() {
-  try {
-    await ensureSchema();
-    await seedDefaults();
-    const PORT = process.env.PORT || 5000;
-    app.listen(PORT, '0.0.0.0', () =>
-      console.log(`Server attivo su http://0.0.0.0:${PORT}`)
-    );
+   // Assicuriamoci lo schema, ma in caso di errore logghiamo e procediamo
+try {
+   await ensureSchema();
   } catch (err) {
-    console.error("Errore inizializzazione:", err);
-    process.exit(1);
+    console.error("Errore in ensureSchema (ignoro e continuo):", err);
   }
+
+  // Seminiamo i defaults, ma in caso di errore proseguiamo comunque
+  try {
+    await seedDefaults();
+  } catch (err) {
+    console.error("Errore in seedDefaults (ignoro e continuo):", err);
+  }
+  // Avviamo sempre il server
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, '0.0.0.0', () =>
+    console.log(`Server attivo su http://0.0.0.0:${PORT}`)
+  );
 }
 startServer();
 
