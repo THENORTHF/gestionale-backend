@@ -10,12 +10,11 @@ app.use(cors());
 app.use(express.json());
 
 // --- HEALTH CHECK ---
-// --- HEALTH CHECK ---
 app.get("/", (_req, res) => {
   res.send(`✅ Backend gestionale attivo su porta ${process.env.PORT || 5000}`);
 });
 
-// --- SCHEMA ENSURE --
+// --- SCHEMA ENSURE ---
 async function ensureSchema() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS product_types (
@@ -61,6 +60,13 @@ async function ensureSchema() {
       assigned_worker_id INTEGER REFERENCES workers(id),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS work_statuses (
+      id SERIAL PRIMARY KEY,
+      product_type_id INTEGER NOT NULL REFERENCES product_types(id),
+      sub_category_id INTEGER REFERENCES sub_categories(id),
+      status_list TEXT NOT NULL,
+      UNIQUE (product_type_id, sub_category_id)
+    );
 
     -- Vincolo UNIQUE corretto sulle sub-categorie
     ALTER TABLE sub_categories
@@ -79,6 +85,7 @@ async function ensureSchema() {
     $$;
   `);
 }
+
 
 // --- SEEDING DEFAULTS ---
 async function seedDefaults() {
