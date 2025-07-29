@@ -369,27 +369,30 @@ app.post("/api/worker-login", async (req, res) => {
 // ORDERS CRUD
 app.get("/api/orders", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      `SELECT
-         o.id,
-         o.customer_name,
-         o.phone_number,
-         o.address,
-         pt.name AS product_type_name,
-         sc.name AS sub_category_name,
-         o.quantity,
-         o.dimensions,
-         o.color,
-         o.custom_notes,
-         o.barcode,
-         o.price_total,
-         o.status,
-         o.created_at
-       FROM orders o
-       LEFT JOIN product_types pt ON o.product_type_id=pt.id
-       LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
-       ORDER BY o.created_at DESC;`
-    );
+   const { rows } = await db.query(
+  `SELECT
+     o.id,
+     o.customer_name,
+     o.phone_number,
+     o.address,
+     o.product_type_id,        -- AGGIUNGI QUESTO
+     o.sub_category_id,        -- E QUESTO
+     pt.name AS product_type_name,
+     sc.name AS sub_category_name,
+     o.quantity,
+     o.dimensions,
+     o.color,
+     o.custom_notes,
+     o.barcode,
+     o.price_total,
+     o.status,
+     o.created_at
+   FROM orders o
+   LEFT JOIN product_types pt ON o.product_type_id=pt.id
+   LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
+   ORDER BY o.created_at DESC;`
+);
+
     res.json(rows);
   } catch (err) {
     console.error(err);
