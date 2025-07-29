@@ -500,6 +500,64 @@ app.delete("/api/orders/:id", async (req, res) => {
   }
 });
 
+// --- WORK STATUSES (STATI DI LAVORAZIONE PERSONALIZZATI) ---
+
+// 1. GET: Stati di lavorazione per un prodotto+sottocategoria
+app.get("/api/work-statuses", async (req, res) => {
+  const { productTypeId, subCategoryId } = req.query;
+  if (!productTypeId) return res.status(400).json({ error: "productTypeId richiesto" });
+  try {
+    const { rows } = await db.query(
+      `SELECT * FROM work_statuses
+       WHERE product_type_id=$1 AND
+             (sub_category_id = $2 OR $2 IS NULL)
+       LIMIT 1;`,
+      [productTypeId, subCategoryId || null]
+    );
+    if (!rows[0]) {
+      // Default: nessuno stato ancora creato
+      return res.json({ status_list: '["In attesa","In lavorazione 1","In lavorazione 2","Pronto","Consegnato"]' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore recupero stati lavorazione" });
+  }
+});
+
+// 2. POST: Crea o aggiorna stati di lavorazione per un prodotto+sottocategoria
+app.post("/api/work-statuses", async (req, res) => {
+  const { productTypeId, subCategoryId, statusList } = req.body;
+  if (!productTypeId || !statusList) return res.status(400).json({ error: "Dati mancanti" });
+  try {
+    // Upsert: se esiste, aggiorna; altrimenti inserisci
+    const { rows } = await db.query(
+      `INSERT INTO work_statuses (product_type_id, sub_category_id, status_list)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (product_type_id, sub_category_id)
+        DO UPDATE SET status_list = EXCLUDED.status_list
+        RETURNING *;`,
+      [productTypeId, subCategoryId || null, JSON.stringify(statusList)]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Impossibile salvare stati lavorazione" });
+  }
+});
+
+// 3. (Opzionale) GET: tutti gli stati di lavorazione configurati
+app.get("/api/work-statuses/all", async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT * FROM work_statuses;`);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore recupero tutte le configurazioni stati lavorazione" });
+  }
+});
+
+
 // WORKERS MANAGEMENT
 app.get("/api/workers", async (req, res) => {
   try {
