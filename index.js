@@ -485,6 +485,8 @@ app.get("/api/orders/barcode/:barcode", async (req, res) => {
          o.custom_notes,
          o.price_total,
          o.status,
+         o.product_type_id,     -- <-- AGGIUNGI QUESTO!
+         o.sub_category_id,     -- <-- E QUESTO!
          w.username AS assigned_worker_name
        FROM orders o
        LEFT JOIN product_types pt ON o.product_type_id=pt.id
