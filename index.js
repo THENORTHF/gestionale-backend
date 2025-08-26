@@ -55,7 +55,7 @@ async function ensureSchema() {
       phone_number TEXT,
       address TEXT,
       barcode TEXT UNIQUE NOT NULL,
-      price_total NUMERIC NOT NULL,
+      price_total NUMERIC NOT NULL,       -- prezzo calcolato (base)
       status TEXT DEFAULT 'In attesa',
       assigned_worker_id INTEGER REFERENCES workers(id),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -83,6 +83,10 @@ async function ensureSchema() {
         END IF;
       END
     $$;
+
+    -- ✅ NUOVO CAMPO: prezzo manuale opzionale
+    ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS manual_price NUMERIC NULL;
   `);
 }
 
@@ -369,36 +373,38 @@ app.post("/api/worker-login", async (req, res) => {
 // ORDERS CRUD
 app.get("/api/orders", async (req, res) => {
   try {
-   const { rows } = await db.query(
-  `SELECT
-     o.id,
-     o.customer_name,
-     o.phone_number,
-     o.address,
-     o.product_type_id,        -- AGGIUNGI QUESTO
-     o.sub_category_id,        -- E QUESTO
-     pt.name AS product_type_name,
-     sc.name AS sub_category_name,
-     o.quantity,
-     o.dimensions,
-     o.color,
-     o.custom_notes,
-     o.barcode,
-     o.price_total,
-     o.status,
-     o.created_at
-   FROM orders o
-   LEFT JOIN product_types pt ON o.product_type_id=pt.id
-   LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
-   ORDER BY o.created_at DESC;`
-);
-
+    const { rows } = await db.query(
+      `SELECT
+         o.id,
+         o.customer_name,
+         o.phone_number,
+         o.address,
+         o.product_type_id,
+         o.sub_category_id,
+         pt.name AS product_type_name,
+         sc.name AS sub_category_name,
+         o.quantity,
+         o.dimensions,
+         o.color,
+         o.custom_notes,
+         o.barcode,
+         o.price_total,
+         o.manual_price,
+         COALESCE(o.manual_price, o.price_total) AS effective_price,
+         o.status,
+         o.created_at
+       FROM orders o
+       LEFT JOIN product_types pt ON o.product_type_id=pt.id
+       LEFT JOIN sub_categories sc ON o.sub_category_id=sc.id
+       ORDER BY o.created_at DESC;`
+    );
     res.json(rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Errore server orders" });
   }
 });
+
 app.post("/api/orders", async (req, res) => {
   try {
     const {
@@ -409,22 +415,28 @@ app.post("/api/orders", async (req, res) => {
       color,
       customNotes = "",
       phoneNumber = null,
-      address = null
+      address = null,
+      manualPrice = null   // ✅ opzionale (usato se presente)
     } = req.body;
+
     const [w, h] = dimensions.split("x").map(Number);
     const area = (w * h) / 10000;
+
     const pl = await db.query(
       "SELECT price_per_sqm FROM price_lists WHERE product_type_id=$1 AND sub_category_id=$2;",
       [productTypeId, subCategoryId]
     );
     const pricePerSqm = pl.rows.length ? Number(pl.rows[0].price_per_sqm) : 0;
+
     const ci = await db.query(
       "SELECT percent_increment FROM color_increments WHERE color=$1;",
       [color]
     );
     const percent = ci.rows[0] ? Number(ci.rows[0].percent_increment) : 0;
+
     const priceTotal = pricePerSqm * area * (1 + percent / 100);
     const barcode = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
     const { rows } = await db.query(
       `INSERT INTO orders(
          customer_name,
@@ -436,8 +448,9 @@ app.post("/api/orders", async (req, res) => {
          phone_number,
          address,
          barcode,
-         price_total
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *;`,
+         price_total,
+         manual_price
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *;`,
       [
         customerName,
         productTypeId,
@@ -448,7 +461,8 @@ app.post("/api/orders", async (req, res) => {
         phoneNumber,
         address,
         barcode,
-        priceTotal
+        priceTotal,
+        manualPrice // può essere null
       ]
     );
     res.status(201).json(rows[0]);
@@ -457,12 +471,16 @@ app.post("/api/orders", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.patch("/api/orders/:id/status", async (req, res) => {
   try {
     const { id } = req.params;
     const { status, workerId } = req.body;
     const { rows } = await db.query(
-      `UPDATE orders SET status=$1, assigned_worker_id=COALESCE($2,assigned_worker_id) WHERE id=$3 RETURNING *;`,
+      `UPDATE orders
+         SET status=$1,
+             assigned_worker_id=COALESCE($2,assigned_worker_id)
+       WHERE id=$3 RETURNING *;`,
       [status, workerId || null, id]
     );
     res.json(rows[0]);
@@ -471,6 +489,26 @@ app.patch("/api/orders/:id/status", async (req, res) => {
     res.status(500).json({ error: "Errore aggiornamento status" });
   }
 });
+
+// ✅ Nuova rotta: aggiorna il prezzo manuale (solo admin lato FE; qui non c'è auth middleware)
+app.patch("/api/orders/:id/price", async (req, res) => {
+  try {
+    const { id } = req.params;
+    let { manualPrice } = req.body;
+    if (manualPrice === "" || manualPrice === undefined) manualPrice = null;
+
+    const { rows } = await db.query(
+      "UPDATE orders SET manual_price=$1 WHERE id=$2 RETURNING *;",
+      [manualPrice, id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Ordine non trovato" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore aggiornamento prezzo manuale" });
+  }
+});
+
 app.get("/api/orders/barcode/:barcode", async (req, res) => {
   try {
     const { rows } = await db.query(
@@ -484,9 +522,11 @@ app.get("/api/orders/barcode/:barcode", async (req, res) => {
          o.color,
          o.custom_notes,
          o.price_total,
+         o.manual_price,
+         COALESCE(o.manual_price, o.price_total) AS effective_price,
          o.status,
-         o.product_type_id,     -- <-- AGGIUNGI QUESTO!
-         o.sub_category_id,     -- <-- E QUESTO!
+         o.product_type_id,
+         o.sub_category_id,
          w.username AS assigned_worker_name
        FROM orders o
        LEFT JOIN product_types pt ON o.product_type_id=pt.id
@@ -502,6 +542,7 @@ app.get("/api/orders/barcode/:barcode", async (req, res) => {
     res.status(500).json({ error: "Errore server ordine by barcode" });
   }
 });
+
 app.delete("/api/orders/:id", async (req, res) => {
   try {
     await db.query("DELETE FROM orders WHERE id=$1;", [req.params.id]);
