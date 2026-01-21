@@ -17,6 +17,18 @@ app.get("/", (_req, res) => {
 // --- SCHEMA ENSURE ---
 async function ensureSchema() {
   await db.query(`
+    -- CUSTOMERS (anagrafica clienti)
+    CREATE TABLE IF NOT EXISTS customers (
+      id SERIAL PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      phone_number TEXT,
+      address TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_customers_name_lower
+      ON customers (LOWER(name));
+
     CREATE TABLE IF NOT EXISTS product_types (
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL
@@ -45,6 +57,7 @@ async function ensureSchema() {
     );
     CREATE TABLE IF NOT EXISTS orders (
       id SERIAL PRIMARY KEY,
+      customer_id INTEGER REFERENCES customers(id),
       customer_name TEXT NOT NULL,
       product_type_id INTEGER REFERENCES product_types(id),
       sub_category_id INTEGER REFERENCES sub_categories(id),
@@ -87,6 +100,10 @@ async function ensureSchema() {
     -- ✅ NUOVO CAMPO: prezzo manuale opzionale
     ALTER TABLE orders
       ADD COLUMN IF NOT EXISTS manual_price NUMERIC NULL;
+
+    -- ✅ CUSTOMER_ID opzionale sugli ordini (compatibilità con vecchi dati)
+    ALTER TABLE orders
+      ADD COLUMN IF NOT EXISTS customer_id INTEGER NULL;
   `);
 }
 
@@ -370,6 +387,119 @@ app.post("/api/worker-login", async (req, res) => {
   }
 });
 
+// --- CUSTOMERS (ANAGRAFICA CLIENTI) ---
+
+// Suggerimenti per autocomplete (starts-with)
+app.get("/api/customers/suggest", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const limit = Math.min(parseInt(req.query.limit || "10", 10) || 10, 50);
+    if (!q) return res.json([]);
+
+    const { rows } = await db.query(
+      `SELECT id, name, phone_number, address
+       FROM customers
+       WHERE LOWER(name) LIKE LOWER($1)
+       ORDER BY name ASC
+       LIMIT $2;`,
+      [`${q}%`, limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore server customers suggest" });
+  }
+});
+
+// Lista clienti (con ricerca semplice)
+app.get("/api/customers", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const params = [];
+    const where = search ? "WHERE LOWER(name) LIKE LOWER($1)" : "";
+    if (search) params.push(`%${search}%`);
+
+    const { rows } = await db.query(
+      `SELECT id, name, phone_number, address, created_at
+       FROM customers
+       ${where}
+       ORDER BY name ASC;`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore server customers" });
+  }
+});
+
+// Crea cliente
+app.post("/api/customers", async (req, res) => {
+  try {
+    const { name, phone_number = null, address = null } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: "name richiesto" });
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO customers (name, phone_number, address)
+       VALUES ($1,$2,$3)
+       RETURNING id, name, phone_number, address, created_at;`,
+      [String(name).trim(), phone_number || null, address || null]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    // Gestione nome duplicato
+    if (String(err.code) === "23505") {
+      return res.status(409).json({ error: "Cliente già esistente" });
+    }
+    res.status(500).json({ error: "Impossibile creare cliente" });
+  }
+});
+
+// Aggiorna cliente
+app.put("/api/customers/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { name, phone_number = null, address = null } = req.body || {};
+    if (!id) return res.status(400).json({ error: "id non valido" });
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: "name richiesto" });
+    }
+    const { rows } = await db.query(
+      `UPDATE customers
+         SET name=$1,
+             phone_number=$2,
+             address=$3
+       WHERE id=$4
+       RETURNING id, name, phone_number, address, created_at;`,
+      [String(name).trim(), phone_number || null, address || null, id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Cliente non trovato" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    if (String(err.code) === "23505") {
+      return res.status(409).json({ error: "Nome cliente già in uso" });
+    }
+    res.status(500).json({ error: "Impossibile aggiornare cliente" });
+  }
+});
+
+// Elimina cliente
+app.delete("/api/customers/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: "id non valido" });
+    await db.query("DELETE FROM customers WHERE id=$1;", [id]);
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Impossibile cancellare cliente" });
+  }
+});
+
 // ORDERS CRUD
 app.get("/api/orders", async (req, res) => {
   try {
@@ -408,9 +538,11 @@ app.get("/api/orders", async (req, res) => {
 app.post("/api/orders", async (req, res) => {
   try {
     const {
+      customerId = null,
       customerName,
       productTypeId,
       subCategoryId = null,
+      quantity = 1,
       dimensions,
       color,
       customNotes = "",
@@ -439,9 +571,11 @@ app.post("/api/orders", async (req, res) => {
 
     const { rows } = await db.query(
       `INSERT INTO orders(
+         customer_id,
          customer_name,
          product_type_id,
          sub_category_id,
+         quantity,
          dimensions,
          color,
          custom_notes,
@@ -450,11 +584,13 @@ app.post("/api/orders", async (req, res) => {
          barcode,
          price_total,
          manual_price
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *;`,
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *;`,
       [
+        customerId,
         customerName,
         productTypeId,
         subCategoryId,
+        quantity,
         dimensions,
         color,
         customNotes,
