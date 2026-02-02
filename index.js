@@ -260,6 +260,38 @@ app.post("/api/product-types", async (req, res) => {
   }
 });
 
+
+app.delete("/api/product-types/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID non valido" });
+
+  try {
+    const [{ rows: subR }, { rows: ordR }, { rows: plR }] = await Promise.all([
+      db.query("SELECT COUNT(*)::int AS c FROM sub_categories WHERE product_type_id=$1", [id]),
+      db.query("SELECT COUNT(*)::int AS c FROM orders WHERE product_type_id=$1", [id]),
+      db.query("SELECT COUNT(*)::int AS c FROM price_lists WHERE product_type_id=$1", [id]),
+    ]);
+
+    const subCount = subR[0]?.c || 0;
+    const ordCount = ordR[0]?.c || 0;
+    const plCount = plR[0]?.c || 0;
+
+    if (subCount > 0 || ordCount > 0 || plCount > 0) {
+      return res.status(400).json({
+        error: "Impossibile eliminare: tipo usato in sottocategorie, ordini o listini."
+      });
+    }
+
+    const { rowCount } = await db.query("DELETE FROM product_types WHERE id=$1", [id]);
+    if (!rowCount) return res.status(404).json({ error: "Tipo non trovato" });
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore eliminazione product-type" });
+  }
+});
+
 // SUB CATEGORIES
 app.get("/api/sub-categories", async (req, res) => {
   try {
@@ -285,6 +317,36 @@ app.post("/api/sub-categories", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Impossibile creare sub-category" });
+  }
+});
+
+
+app.delete("/api/sub-categories/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID non valido" });
+
+  try {
+    const [{ rows: ordR }, { rows: plR }] = await Promise.all([
+      db.query("SELECT COUNT(*)::int AS c FROM orders WHERE sub_category_id=$1", [id]),
+      db.query("SELECT COUNT(*)::int AS c FROM price_lists WHERE sub_category_id=$1", [id]),
+    ]);
+
+    const ordCount = ordR[0]?.c || 0;
+    const plCount = plR[0]?.c || 0;
+
+    if (ordCount > 0 || plCount > 0) {
+      return res.status(400).json({
+        error: "Impossibile eliminare: sottocategoria usata in ordini o listini."
+      });
+    }
+
+    const { rowCount } = await db.query("DELETE FROM sub_categories WHERE id=$1", [id]);
+    if (!rowCount) return res.status(404).json({ error: "Sottocategoria non trovata" });
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore eliminazione sub-category" });
   }
 });
 
