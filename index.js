@@ -1,13 +1,56 @@
+/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted
 // Entry point per il server Express del gestionale
 
 const express = require("express");
 const cors = require("cors");
 const db = require("./db");
+const PDFDocumentKit = require("pdfkit");
+const { PDFDocument } = require("pdf-lib");
+const { generateJollyPdf } = require("./services/jollyWorkbook");
 require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+function parseLegacyDimensions(dimensions) {
+  const match = String(dimensions || "").match(/^\s*([0-9]+(?:[.,][0-9]+)?)\s*[xX×]\s*([0-9]+(?:[.,][0-9]+)?)/);
+  if (!match) return {};
+  return {
+    heightCm: Number(match[1].replace(",", ".")),
+    widthCm: Number(match[2].replace(",", "."))
+  };
+}
+
+function createCommandPdf(orders) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const pdf = new PDFDocumentKit({ size: "A4", margin: 40 });
+    pdf.on("data", chunk => chunks.push(chunk));
+    pdf.on("end", () => resolve(Buffer.concat(chunks)));
+    pdf.on("error", reject);
+
+    const first = orders[0];
+    pdf.fontSize(28).font("Helvetica-Bold").text("COMANDA");
+    pdf.moveDown(0.25).fontSize(11).font("Helvetica").text(new Date().toLocaleDateString("it-IT"));
+    pdf.moveDown().lineWidth(1.5).moveTo(40, pdf.y).lineTo(555, pdf.y).stroke();
+    pdf.moveDown().fontSize(20).font("Helvetica-Bold").text(first.customer_name || "");
+    pdf.fontSize(11).font("Helvetica")
+      .text(`INDIRIZZO: ${first.address || "-"}`)
+      .text(`TEL: ${first.phone_number || "-"}`);
+    pdf.moveDown();
+
+    for (const order of orders) {
+      pdf.fontSize(14).font("Helvetica-Bold")
+        .text(`${order.product_type_name || ""}${order.sub_category_name ? ` - ${order.sub_category_name}` : ""}`);
+      pdf.fontSize(11).font("Helvetica")
+        .text(`Q.tà: ${order.quantity || 1} pz   Misure: ${order.dimensions || ""}   Colore: ${order.color || ""}`);
+      if (order.custom_notes) pdf.text(`Note: ${order.custom_notes}`);
+      pdf.moveDown(0.6);
+    }
+    pdf.end();
+  });
+}
 
 // --- HEALTH CHECK ---
 app.get("/", (_req, res) => {
@@ -104,6 +147,25 @@ async function ensureSchema() {
     -- ✅ CUSTOMER_ID opzionale sugli ordini (compatibilità con vecchi dati)
     ALTER TABLE orders
       ADD COLUMN IF NOT EXISTS customer_id INTEGER NULL;
+
+    -- Dimensioni separate in cm. Le colonne restano nullable per gli ordini storici.
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS height_cm NUMERIC NULL;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS width_cm NUMERIC NULL;
+
+    -- Stato visivo di stampa/scarico separato dallo stato di lavorazione.
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS print_processed_at TIMESTAMP NULL;
+
+    -- Migrazione conservativa: deriva "altezza x larghezza" solo dalle stringhe valide.
+    UPDATE orders
+       SET height_cm = REPLACE((regexp_match(dimensions, '^\\s*([0-9]+(?:[.,][0-9]+)?)\\s*[xX×]\\s*([0-9]+(?:[.,][0-9]+)?)\\s*(?:cm)?\\s*$'))[1], ',', '.')::NUMERIC,
+           width_cm  = REPLACE((regexp_match(dimensions, '^\\s*([0-9]+(?:[.,][0-9]+)?)\\s*[xX×]\\s*([0-9]+(?:[.,][0-9]+)?)\\s*(?:cm)?\\s*$'))[2], ',', '.')::NUMERIC
+     WHERE (height_cm IS NULL OR width_cm IS NULL)
+       AND dimensions ~ '^\\s*[0-9]+(?:[.,][0-9]+)?\\s*[xX×]\\s*[0-9]+(?:[.,][0-9]+)?\\s*(?:cm)?\\s*$';
+
+    -- Mantiene evidenziati anche gli ordini che il vecchio gestionale marcava Scaricato.
+    UPDATE orders
+       SET print_processed_at = COALESCE(print_processed_at, created_at)
+     WHERE status = 'Scaricato' AND print_processed_at IS NULL;
   `);
 }
 
@@ -577,6 +639,8 @@ app.get("/api/orders", async (req, res) => {
          sc.name AS sub_category_name,
          o.quantity,
          o.dimensions,
+         o.height_cm,
+         o.width_cm,
          o.color,
          o.custom_notes,
          o.barcode,
@@ -584,6 +648,7 @@ app.get("/api/orders", async (req, res) => {
          o.manual_price,
          COALESCE(o.manual_price, o.price_total) AS effective_price,
          o.status,
+         o.print_processed_at,
          o.created_at
        FROM orders o
        LEFT JOIN product_types pt ON o.product_type_id=pt.id
@@ -606,6 +671,8 @@ app.post("/api/orders", async (req, res) => {
       subCategoryId = null,
       quantity = 1,
       dimensions,
+      heightCm = null,
+      widthCm = null,
       color,
       customNotes = "",
       phoneNumber = null,
@@ -613,8 +680,14 @@ app.post("/api/orders", async (req, res) => {
       manualPrice = null   // ✅ opzionale (usato se presente)
     } = req.body;
 
-    const [w, h] = dimensions.split("x").map(Number);
-    const area = (w * h) / 10000;
+    const legacy = parseLegacyDimensions(dimensions);
+    const normalizedHeight = Number(heightCm ?? legacy.heightCm);
+    const normalizedWidth = Number(widthCm ?? legacy.widthCm);
+    if (!(normalizedHeight > 0) || !(normalizedWidth > 0)) {
+      return res.status(400).json({ error: "Altezza e larghezza devono essere maggiori di zero" });
+    }
+    const displayDimensions = `${normalizedHeight} x ${normalizedWidth}`;
+    const area = (normalizedWidth * normalizedHeight) / 10000;
 
     const pl = await db.query(
       "SELECT price_per_sqm FROM price_lists WHERE product_type_id=$1 AND sub_category_id=$2;",
@@ -639,6 +712,8 @@ app.post("/api/orders", async (req, res) => {
          sub_category_id,
          quantity,
          dimensions,
+         height_cm,
+         width_cm,
          color,
          custom_notes,
          phone_number,
@@ -646,14 +721,16 @@ app.post("/api/orders", async (req, res) => {
          barcode,
          price_total,
          manual_price
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *;`,
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *;`,
       [
         customerId,
         customerName,
         productTypeId,
         subCategoryId,
         quantity,
-        dimensions,
+        displayDimensions,
+        normalizedHeight,
+        normalizedWidth,
         color,
         customNotes,
         phoneNumber,
@@ -685,6 +762,74 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Errore aggiornamento status" });
+  }
+});
+
+app.patch("/api/orders/:id/print-processed", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "UPDATE orders SET print_processed_at=COALESCE(print_processed_at,CURRENT_TIMESTAMP) WHERE id=$1 RETURNING *;",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Ordine non trovato" });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore aggiornamento stato stampa" });
+  }
+});
+
+app.post("/api/orders/multi-print", async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ error: "Seleziona almeno un ordine" });
+
+    const { rows: orders } = await db.query(
+      `SELECT o.*, pt.name AS product_type_name, sc.name AS sub_category_name
+         FROM orders o
+         LEFT JOIN product_types pt ON pt.id=o.product_type_id
+         LEFT JOIN sub_categories sc ON sc.id=o.sub_category_id
+        WHERE o.id = ANY($1::int[])
+        ORDER BY pt.name, sc.name, o.id;`,
+      [ids]
+    );
+    if (orders.length !== ids.length) return res.status(404).json({ error: "Uno o più ordini non sono stati trovati" });
+
+    const first = orders[0];
+    const sameCustomer = orders.every(order =>
+      first.customer_id && order.customer_id
+        ? first.customer_id === order.customer_id
+        : String(first.customer_name || "").trim().toLowerCase() === String(order.customer_name || "").trim().toLowerCase()
+    );
+    if (!sameCustomer) return res.status(400).json({ error: "Gli ordini devono appartenere allo stesso cliente" });
+
+    const merged = await PDFDocument.create();
+    const command = await PDFDocument.load(await createCommandPdf(orders));
+    const commandPages = await merged.copyPages(command, command.getPageIndices());
+    commandPages.forEach(page => merged.addPage(page));
+
+    for (const order of orders) {
+      const isJolly = String(order.product_type_name || "").toLowerCase().startsWith("zanzarier") &&
+        String(order.sub_category_name || "").trim().toLowerCase() === "jolly";
+      if (!isJolly) continue;
+      for (let unit = 1; unit <= Math.max(1, Number(order.quantity) || 1); unit += 1) {
+        const workPdf = await PDFDocument.load(await generateJollyPdf(order, unit));
+        const pages = await merged.copyPages(workPdf, workPdf.getPageIndices());
+        pages.forEach(page => merged.addPage(page));
+      }
+    }
+
+    const output = await merged.save();
+    await db.query(
+      "UPDATE orders SET print_processed_at=COALESCE(print_processed_at,CURRENT_TIMESTAMP) WHERE id = ANY($1::int[]);",
+      [ids]
+    );
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="comanda-${first.customer_name || "cliente"}.pdf"`);
+    res.send(Buffer.from(output));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: `Impossibile generare la stampa multiordine: ${err.message}` });
   }
 });
 
