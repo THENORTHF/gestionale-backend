@@ -1,4 +1,3 @@
-/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted
 const AdmZip = require("adm-zip");
 const fs = require("fs/promises");
 const os = require("os");

@@ -1,4 +1,3 @@
-/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted
 # Stampa lavorazione JOLLY
 
 Il modello sorgente è `templates/JollyFlexa-rev5.xlsm`. Non viene mai modificato durante una stampa: per ogni pezzo il backend crea una copia in una directory temporanea, valorizza soltanto le celle di input e richiede a LibreOffice di ricalcolare le formule ed esportare il foglio in PDF. La copia temporanea viene eliminata al termine.
