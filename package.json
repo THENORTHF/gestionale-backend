@@ -1,3 +1,4 @@
+/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted
 {
   "name": "gestionale-backend",
   "version": "1.0.0",
@@ -17,9 +18,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "adm-zip": "^0.6.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
+    "pdf-lib": "^1.17.1",
+    "pdfkit": "^0.20.1",
     "pg": "^8.10.0"
   },
   "devDependencies": {
