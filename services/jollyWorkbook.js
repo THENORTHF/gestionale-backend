@@ -35,6 +35,17 @@ function replaceFormulaCache(xml, ref, value) {
   return xml.replace(pattern, `$1<v>${xmlEscape(value)}</v>$2`);
 }
 
+function forceFormulaRecalculation(xml) {
+  const calculateAlways = xml.replace(/<f\b([^>]*)>/g, (tag, attributes) => {
+    const withoutCalculateAlways = attributes.replace(/\s+ca="[^"]*"/g, "");
+    return `<f${withoutCalculateAlways} ca="1">`;
+  });
+  return calculateAlways.replace(
+    /(<c\b[^>]*>[\s\S]*?<f\b[^>]*>[\s\S]*?<\/f>)\s*<v>[\s\S]*?<\/v>(\s*<\/c>)/g,
+    "$1$2"
+  );
+}
+
 function getJollySheetPath(zip) {
   const workbookXml = zip.readAsText("xl/workbook.xml");
   const sheet = workbookXml.match(/<sheet\b[^>]*name="JOLLY"[^>]*r:id="([^"]+)"[^>]*\/>/);
@@ -59,6 +70,9 @@ async function createJollyWorkbookCopy(order, unitNumber, destination) {
   sheetXml = replaceCell(sheetXml, "I9", Number(order.height_cm) * 10, true);
   // E43 conserva la formula =F1; si aggiorna anche il valore cache per l'export headless.
   sheetXml = replaceFormulaCache(sheetXml, "E43", order.customer_name || "");
+  // Il modello marca molte formule come non ricalcolabili (ca=false). LibreOffice
+  // altrimenti esporta nel PDF i vecchi valori memorizzati nel file originale.
+  sheetXml = forceFormulaRecalculation(sheetXml);
   zip.updateFile(sheetPath, Buffer.from(sheetXml, "utf8"));
 
   // Forza il ricalcolo completo all'apertura senza riscrivere formule o macro.
