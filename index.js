@@ -6,6 +6,7 @@ const db = require("./db");
 const PDFDocumentKit = require("pdfkit");
 const { PDFDocument } = require("pdf-lib");
 const { generateJollyPdf } = require("./services/jollyWorkbook");
+const { createCutRecord, createCutsForOrder, prepareCutData } = require("./services/teloCuts");
 require("dotenv").config();
 
 const app = express();
@@ -123,6 +124,31 @@ async function ensureSchema() {
       UNIQUE (product_type_id, sub_category_id)
     );
 
+    CREATE TABLE IF NOT EXISTS telo_cuts (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+      piece_number INTEGER,
+      source_mode TEXT NOT NULL DEFAULT 'manuale',
+      processing_mode TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      input_width_mm INTEGER NOT NULL,
+      input_height_mm INTEGER NOT NULL,
+      cut_width_mm INTEGER NOT NULL,
+      cut_height_mm INTEGER NOT NULL,
+      telo_type TEXT NOT NULL,
+      note TEXT,
+      barcode_value TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'nuovo',
+      cut_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (order_id, piece_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_telo_cuts_status_created
+      ON telo_cuts(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_telo_cuts_barcode
+      ON telo_cuts(barcode_value);
+
     -- Vincolo UNIQUE corretto sulle sub-categorie
     ALTER TABLE sub_categories
       DROP CONSTRAINT IF EXISTS sub_categories_name_key;
@@ -180,7 +206,8 @@ async function seedDefaults() {
       "Tapparella",
       "Box Doccia",
       "Tenda a Rullo",
-      "Tenda da Sole"
+      "Tenda da Sole",
+      "TSB"
     ];
     for (const name of types) {
       await db.query(
@@ -195,7 +222,8 @@ async function seedDefaults() {
 
     // Seed sub_categories
     const subMap = {
-      "Zanzariera": ["Molla","Catena","Jolly","Telaio Fisso","Battente","A Kit"],
+      "Zanzariera": ["Molla","Catena","Verticali","Jolly","Telaio Fisso","Battente","A Kit"],
+      "TSB": ["Normale","2B","Solo sotto"],
       "Riparazione Zanzariera": ["Molla","Catena"],
       "Veneziana": ["Alluminio","Legno","PVC"],
       "Tapparella": ["PVC","Alluminio","Motorizzata"],
@@ -739,7 +767,13 @@ app.post("/api/orders", async (req, res) => {
         manualPrice // può essere null
       ]
     );
-    res.status(201).json(rows[0]);
+    let teloCutsCreated = 0;
+    try {
+      teloCutsCreated = (await createCutsForOrder(db, rows[0].id)).length;
+    } catch (cutError) {
+      console.error("Errore generazione automatica Taglio teli:", cutError);
+    }
+    res.status(201).json({ ...rows[0], telo_cuts_created: teloCutsCreated });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -892,6 +926,157 @@ app.delete("/api/orders/:id", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Impossibile cancellare ordine" });
+  }
+});
+
+// --- TAGLIO TELI ---
+app.get("/api/telo-cuts", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const status = String(req.query.status || "").trim();
+    const params = [];
+    const clauses = ["tc.status <> 'eliminato'"];
+    if (search) {
+      params.push(`%${search}%`);
+      clauses.push(`(tc.customer_name ILIKE $${params.length} OR tc.barcode_value ILIKE $${params.length} OR tc.note ILIKE $${params.length})`);
+    }
+    if (status) {
+      params.push(status);
+      clauses.push(`tc.status=$${params.length}`);
+    }
+    const { rows } = await db.query(
+      `SELECT tc.*, pt.name AS product_type_name, sc.name AS sub_category_name
+         FROM telo_cuts tc
+         LEFT JOIN orders o ON o.id=tc.order_id
+         LEFT JOIN product_types pt ON pt.id=o.product_type_id
+         LEFT JOIN sub_categories sc ON sc.id=o.sub_category_id
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY tc.created_at DESC, tc.id DESC
+        LIMIT 1000;`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore recupero Taglio teli" });
+  }
+});
+
+app.post("/api/telo-cuts", async (req, res) => {
+  try {
+    const {
+      customerName,
+      widthMm,
+      heightMm,
+      processingMode = "normale",
+      teloType = "001",
+      note = ""
+    } = req.body || {};
+    const row = await createCutRecord(db, {
+      sourceMode: "manuale",
+      customerName,
+      inputWidthMm: widthMm,
+      inputHeightMm: heightMm,
+      mode: processingMode,
+      type: teloType,
+      note
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/telo-cuts/import-orders", async (_req, res) => {
+  try {
+    const { rows } = await db.query("SELECT id FROM orders ORDER BY id;");
+    let created = 0;
+    for (const order of rows) created += (await createCutsForOrder(db, order.id)).length;
+    res.json({ created });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/telo-cuts/mark-cut", async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ error: "Seleziona almeno un telo" });
+    const { rows } = await db.query(
+      `UPDATE telo_cuts
+          SET status='tagliato', cut_at=COALESCE(cut_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+        WHERE id=ANY($1::int[]) AND status <> 'eliminato'
+        RETURNING *;`,
+      [ids]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore aggiornamento teli" });
+  }
+});
+
+app.patch("/api/telo-cuts/:id", async (req, res) => {
+  try {
+    const current = await db.query("SELECT * FROM telo_cuts WHERE id=$1 AND status <> 'eliminato';", [req.params.id]);
+    if (!current.rows[0]) return res.status(404).json({ error: "Telo non trovato" });
+    const old = current.rows[0];
+    const customerName = String(req.body.customerName ?? old.customer_name).trim() || "x";
+    const processingMode = req.body.processingMode ?? old.processing_mode;
+    const teloType = req.body.teloType ?? old.telo_type;
+    const prepared = prepareCutData({
+      inputWidthMm: req.body.widthMm ?? old.input_width_mm,
+      inputHeightMm: req.body.heightMm ?? old.input_height_mm,
+      mode: processingMode,
+      type: teloType,
+      note: req.body.note ?? old.note
+    });
+    const { rows } = await db.query(
+      `UPDATE telo_cuts SET
+         customer_name=$1, input_width_mm=$2, input_height_mm=$3,
+         cut_width_mm=$4, cut_height_mm=$5, processing_mode=$6,
+         telo_type=$7, note=$8, barcode_value=$9, updated_at=CURRENT_TIMESTAMP
+       WHERE id=$10 RETURNING *;`,
+      [customerName, prepared.inputWidthMm, prepared.inputHeightMm,
+       prepared.cutWidthMm, prepared.cutHeightMm, processingMode,
+       teloType, prepared.note, prepared.barcodeValue, req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/telo-cuts/:id", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "UPDATE telo_cuts SET status='eliminato', updated_at=CURRENT_TIMESTAMP WHERE id=$1 RETURNING id;",
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Telo non trovato" });
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore eliminazione telo" });
+  }
+});
+
+app.get("/api/telo-cuts/barcode/:barcode", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT * FROM telo_cuts
+        WHERE barcode_value=$1 AND status <> 'eliminato'
+        ORDER BY created_at DESC, id DESC;`,
+      [req.params.barcode]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Barcode non trovato" });
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Errore ricerca barcode" });
   }
 });
 
